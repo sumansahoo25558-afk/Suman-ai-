@@ -1,0 +1,322 @@
+
+import express, { Request, Response, NextFunction } from "express";
+import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import dotenv from "dotenv";
+import { GoogleGenAI } from "@google/genai";
+
+dotenv.config();
+
+const app = express();
+const PORT = Number(process.env.PORT || 8080);
+const MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
+
+const apiKey = process.env.GEMINI_API_KEY;
+
+const ai = apiKey
+  ? new GoogleGenAI({ apiKey })
+  : null;
+
+// Security
+app.use(helmet());
+
+app.use(cors({
+  origin: process.env.CLIENT_ORIGIN
+    ? process.env.CLIENT_ORIGIN.split(",")
+    : true,
+}));
+
+app.use(express.json({ limit: "1mb" }));
+
+// Rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too many requests. Please try again later.",
+  },
+});
+
+app.use("/api", apiLimiter);
+
+// Common helpers
+function getText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function validateText(text: string, max = 12000): boolean {
+  return text.length > 0 && text.length <= max;
+}
+
+async function generateAI(prompt: string): Promise<string> {
+  if (!ai) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  const result = await ai.models.generateContent({
+    model: MODEL,
+    contents: prompt,
+  });
+
+  const output = result.text?.trim();
+
+  if (!output) {
+    throw new Error("AI returned an empty response.");
+  }
+
+  return output;
+}
+
+// Health check
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    app: "SUMAN AI STUDIO",
+    status: "running",
+    geminiConfigured: Boolean(ai),
+    model: MODEL,
+    time: new Date().toISOString(),
+  });
+});
+
+// AI translation
+app.post("/api/translate", async (req: Request, res: Response) => {
+  try {
+    const text = getText(req.body?.text);
+    const sourceLanguage = getText(req.body?.sourceLanguage) || "Auto Detect";
+    const targetLanguage = getText(req.body?.targetLanguage);
+
+    if (!validateText(text)) {
+      return res.status(400).json({
+        success: false,
+        error: "Text is required. Maximum 12000 characters.",
+      });
+    }
+
+    if (!targetLanguage || targetLanguage.length > 50) {
+      return res.status(400).json({
+        success: false,
+        error: "Please select a valid target language.",
+      });
+    }
+
+    const prompt = `
+You are a professional multilingual video translator.
+
+Translate the following text from ${sourceLanguage}
+to ${targetLanguage}.
+
+Rules:
+- Preserve the original meaning.
+- Use natural, fluent language.
+- Preserve names and important details.
+- Do not add explanations.
+- Return only the translated text.
+
+TEXT:
+${text}
+`;
+
+    const translatedText = await generateAI(prompt);
+
+    return res.json({
+      success: true,
+      sourceLanguage,
+      targetLanguage,
+      translatedText,
+    });
+  } catch (error) {
+    console.error("Translation error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Translation failed. Check your Gemini API configuration.",
+    });
+  }
+});
+
+// AI video and animation prompt generator
+app.post("/api/generate-prompt", async (req: Request, res: Response) => {
+  try {
+    const idea = getText(req.body?.idea);
+    const style = getText(req.body?.style) || "3D Cinematic Animation";
+    const language = getText(req.body?.language) || "Bengali";
+    const duration = Number(req.body?.duration || 10);
+    const aspectRatio = getText(req.body?.aspectRatio) || "9:16";
+
+    if (!validateText(idea, 3000)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please enter an idea (maximum 3000 characters).",
+      });
+    }
+
+    if (!Number.isInteger(duration) || duration < 1 || duration > 300) {
+      return res.status(400).json({
+        success: false,
+        error: "Duration must be between 1 and 300 seconds.",
+      });
+    }
+
+    if (!["9:16", "16:9", "1:1"].includes(aspectRatio)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid aspect ratio.",
+      });
+    }
+
+    const prompt = `
+You are the professional AI video prompt engineer of SUMAN AI STUDIO.
+
+Create a detailed, production-ready video generation prompt.
+
+User idea: ${idea}
+Visual style: ${style}
+Language: ${language}
+Duration: ${duration} seconds
+Aspect ratio: ${aspectRatio}
+
+Include:
+1. Scene and environment.
+2. Character appearance and consistency.
+3. Character actions.
+4. Camera movement.
+5. Lighting and visual effects.
+6. Dialogue or narration in the requested language.
+7. Sound effects and background music.
+8. Negative instructions to avoid visual errors.
+
+Make the prompt clear, cinematic and ready to copy.
+Do not claim that an actual video has been generated.
+`;
+
+    const generatedPrompt = await generateAI(prompt);
+
+    return res.json({
+      success: true,
+      generatedPrompt,
+      duration,
+      aspectRatio,
+      style,
+    });
+  } catch (error) {
+    console.error("Prompt generation error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Prompt generation failed.",
+    });
+  }
+});
+
+// AI subtitle translation
+app.post("/api/translate-subtitles", async (req: Request, res: Response) => {
+  try {
+    const subtitles = getText(req.body?.subtitles);
+    const targetLanguage = getText(req.body?.targetLanguage);
+
+    if (!validateText(subtitles, 12000)) {
+      return res.status(400).json({
+        success: false,
+        error: "Subtitle text is missing or too long.",
+      });
+    }
+
+    if (!targetLanguage || targetLanguage.length > 50) {
+      return res.status(400).json({
+        success: false,
+        error: "Select a target language.",
+      });
+    }
+
+    const prompt = `
+Translate the following subtitle content into ${targetLanguage}.
+
+IMPORTANT:
+- Preserve all SRT sequence numbers.
+- Preserve all timestamps exactly.
+- Translate only subtitle dialogue.
+- Keep the SRT format valid.
+- Do not add explanations.
+
+SUBTITLES:
+${subtitles}
+`;
+
+    const translatedSubtitles = await generateAI(prompt);
+
+    return res.json({
+      success: true,
+      targetLanguage,
+      translatedSubtitles,
+    });
+  } catch (error) {
+    console.error("Subtitle translation error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Subtitle translation failed.",
+    });
+  }
+});
+
+// General AI text generation
+app.post("/api/ai-text", async (req: Request, res: Response) => {
+  try {
+    const prompt = getText(req.body?.prompt);
+
+    if (!validateText(prompt, 8000)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please enter a valid prompt.",
+      });
+    }
+
+    const result = await generateAI(prompt);
+
+    return res.json({
+      success: true,
+      result,
+    });
+  } catch (error) {
+    console.error("AI text error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "AI text generation failed.",
+    });
+  }
+});
+
+// 404 handler
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    success: false,
+    error: `Route not found: ${req.method} ${req.path}`,
+  });
+});
+
+// Global error handler
+app.use((
+  error: Error,
+  _req: Request,
+  res: Response,
+  _next: NextFunction
+) => {
+  console.error("Server error:", error);
+
+  res.status(500).json({
+    success: false,
+    error: "Internal server error.",
+  });
+});
+
+// Start server
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("--------------------------------");
+  console.log("SUMAN AI STUDIO SERVER");
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Gemini model: ${MODEL}`);
+  console.log(`Gemini configured: ${Boolean(ai)}`);
+  console.log("--------------------------------");
+});
